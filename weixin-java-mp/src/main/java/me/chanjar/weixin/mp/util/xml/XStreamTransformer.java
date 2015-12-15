@@ -51,7 +51,8 @@ public class XStreamTransformer {
     map.put(WxMpXmlOutImageMessage.class, config_WxMpXmlOutImageMessage());
     map.put(WxMpXmlOutVideoMessage.class, config_WxMpXmlOutVideoMessage());
     map.put(WxMpXmlOutVoiceMessage.class, config_WxMpXmlOutVoiceMessage());
-    map.put(WxMpXmlOutTransferCustomerServiceMessage.class,config_WxMpXmlOutTransferCustomerServiceMessage());
+    map.put(WxMpXmlOutTransferCustomerServiceMessage.class, config_WxMpXmlOutTransferCustomerServiceMessage());
+
     return map;
   }
 
@@ -112,7 +113,7 @@ public class XStreamTransformer {
     return xstream;
   }
 
-  private static XStream config_WxMpXmlOutTransferCustomerServiceMessage(){
+  private static XStream config_WxMpXmlOutTransferCustomerServiceMessage() {
     XStream xstream = XStreamInitializer.getInstance();
     xstream.processAnnotations(WxMpXmlOutMessage.class);
     xstream.processAnnotations(WxMpXmlOutTransferCustomerServiceMessage.class);

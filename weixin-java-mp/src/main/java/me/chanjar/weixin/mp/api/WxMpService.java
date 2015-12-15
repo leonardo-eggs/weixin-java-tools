@@ -11,7 +11,6 @@ import me.chanjar.weixin.mp.bean.result.*;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
@@ -738,4 +737,23 @@ public interface WxMpService {
      * @return
      */
     WxMpPayCallback getJSSDKCallbackData(String xmlData);
+    
+    /**
+     * <pre>
+     * 计算Map键值对是否和签名相符,
+     * 按照字段名的 ASCII 码从小到大排序(字典序)后,使用 URL 键值对的 格式(即 key1=value1&key2=value2...)拼接成字符串
+     * </pre>
+     * @param kvm
+     * @param signature
+     * @return
+     */
+    public boolean checkJSSDKCallbackDataSignature(Map<String, String> kvm, String signature);
+    
+   /**
+    * 发送微信红包给个人用户
+    * @param parameters
+    * @return
+    * @throws WxErrorException
+    */
+    public WxRedpackResult sendRedpack(Map<String, String> parameters) throws WxErrorException;
 }

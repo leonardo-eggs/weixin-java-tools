@@ -5,8 +5,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -68,6 +66,7 @@ import me.chanjar.weixin.mp.bean.result.WxMpUser;
 import me.chanjar.weixin.mp.bean.result.WxMpUserCumulate;
 import me.chanjar.weixin.mp.bean.result.WxMpUserList;
 import me.chanjar.weixin.mp.bean.result.WxMpUserSummary;
+import me.chanjar.weixin.mp.bean.result.WxRedpackResult;
 import me.chanjar.weixin.mp.util.http.MaterialDeleteRequestExecutor;
 import me.chanjar.weixin.mp.util.http.MaterialNewsInfoRequestExecutor;
 import me.chanjar.weixin.mp.util.http.MaterialUploadRequestExecutor;
@@ -76,7 +75,6 @@ import me.chanjar.weixin.mp.util.http.MaterialVoiceAndImageDownloadRequestExecut
 import me.chanjar.weixin.mp.util.http.QrCodeRequestExecutor;
 import me.chanjar.weixin.mp.util.json.WxMpGsonBuilder;
 
-import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.http.Consts;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
@@ -87,13 +85,16 @@ import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.BasicResponseHandler;
 import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.helpers.MessageFormatter;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -507,7 +508,10 @@ public class WxMpServiceImpl implements WxMpService {
     String url = "https://api.weixin.qq.com/cgi-bin/message/template/send";
     String responseContent = execute(new SimplePostRequestExecutor(), url, templateMessage.toJson());
     JsonElement tmpJsonElement = Streams.parse(new JsonReader(new StringReader(responseContent)));
-    return tmpJsonElement.getAsJsonObject().get("msgid").getAsString();
+    final JsonObject jsonObject = tmpJsonElement.getAsJsonObject();
+    if (jsonObject.get("errcode").getAsInt() == 0)
+      return jsonObject.get("msgid").getAsString();
+    throw new WxErrorException(WxError.fromJson(responseContent));
   }
 
   public WxMpSemanticQueryResult semanticQuery(WxMpSemanticQuery semanticQuery) throws WxErrorException {
@@ -743,6 +747,7 @@ public class WxMpServiceImpl implements WxMpService {
     String http_proxy_username = wxMpConfigStorage.getHttp_proxy_username();
     String http_proxy_password = wxMpConfigStorage.getHttp_proxy_password();
 
+    final HttpClientBuilder builder = HttpClients.custom();
     if (StringUtils.isNotBlank(http_proxy_host)) {
       // 使用代理服务器
       if (StringUtils.isNotBlank(http_proxy_username)) {
@@ -751,18 +756,22 @@ public class WxMpServiceImpl implements WxMpService {
         credsProvider.setCredentials(
             new AuthScope(http_proxy_host, http_proxy_port),
             new UsernamePasswordCredentials(http_proxy_username, http_proxy_password));
-        httpClient = HttpClients
-            .custom()
-            .setDefaultCredentialsProvider(credsProvider)
-            .build();
+        builder
+            .setDefaultCredentialsProvider(credsProvider);
       } else {
         // 无需用户认证的代理服务器
-        httpClient = HttpClients.createDefault();
       }
       httpProxy = new HttpHost(http_proxy_host, http_proxy_port);
-    } else {
-      httpClient = HttpClients.createDefault();
     }
+    if (wxConfigProvider.getSSLContext() != null){
+      SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(
+          wxConfigProvider.getSSLContext(),
+          new String[] { "TLSv1" },
+          null,
+          SSLConnectionSocketFactory.BROWSER_COMPATIBLE_HOSTNAME_VERIFIER);
+      builder.setSSLSocketFactory(sslsf);
+    }
+    httpClient = builder.build();
   }
 
   @Override
@@ -826,9 +835,8 @@ public class WxMpServiceImpl implements WxMpService {
       WxMpPrepayIdResult wxMpPrepayIdResult = (WxMpPrepayIdResult) xstream.fromXML(responseContent);
       return wxMpPrepayIdResult;
     } catch (IOException e) {
-      e.printStackTrace();
+      throw new RuntimeException("Failed to get prepay id due to IO exception.", e);
     }
-    return new WxMpPrepayIdResult();
   }
 
   final String[] REQUIRED_ORDER_PARAMETERS = new String[] { "appid", "mch_id", "body", "out_trade_no", "total_fee", "spbill_create_ip", "notify_url",
@@ -866,7 +874,7 @@ public class WxMpServiceImpl implements WxMpService {
     WxMpPrepayIdResult wxMpPrepayIdResult = getPrepayId(parameters);
     String prepayId = wxMpPrepayIdResult.getPrepay_id();
     if (prepayId == null || prepayId.equals("")) {
-      throw new RuntimeException("get prepayid error");
+      throw new RuntimeException(String.format("Failed to get prepay id due to error code '%s'(%s).", wxMpPrepayIdResult.getErr_code(), wxMpPrepayIdResult.getErr_code_des()));
     }
 
     Map<String, String> payInfo = new HashMap<String, String>();
@@ -937,5 +945,49 @@ public class WxMpServiceImpl implements WxMpService {
     return new WxMpPayCallback();
   }
   
-  
+  @Override
+  public boolean checkJSSDKCallbackDataSignature(Map<String, String> kvm, String signature) {
+	  return signature.equals(WxCryptUtil.createSign(kvm, wxMpConfigStorage.getPartnerKey()));
+  }
+
+  @Override
+  public WxRedpackResult sendRedpack(Map<String, String> parameters) throws WxErrorException {
+    String nonce_str = System.currentTimeMillis() + "";
+
+    SortedMap<String, String> packageParams = new TreeMap<String, String>(parameters);
+    packageParams.put("wxappid", wxMpConfigStorage.getAppId());
+    packageParams.put("mch_id", wxMpConfigStorage.getPartnerId());
+    packageParams.put("nonce_str", nonce_str);
+
+    String sign = WxCryptUtil.createSign(packageParams, wxMpConfigStorage.getPartnerKey());
+    packageParams.put("sign", sign);
+    
+    StringBuilder request = new StringBuilder("<xml>");
+    for (Entry<String, String> para : packageParams.entrySet()) {
+      request.append(String.format("<%s>%s</%s>", para.getKey(), para.getValue(), para.getKey()));
+    }
+    request.append("</xml>");
+    
+    HttpPost httpPost = new HttpPost("https://api.mch.weixin.qq.com/mmpaymkttransfers/sendredpack");
+    if (httpProxy != null) {
+      RequestConfig config = RequestConfig.custom().setProxy(httpProxy).build();
+      httpPost.setConfig(config);
+    }
+
+    StringEntity entity = new StringEntity(request.toString(), Consts.UTF_8);
+    httpPost.setEntity(entity);
+    try {
+      CloseableHttpResponse response = getHttpclient().execute(httpPost);
+      String responseContent = Utf8ResponseHandler.INSTANCE.handleResponse(response);
+      XStream xstream = XStreamInitializer.getInstance();
+      xstream.processAnnotations(WxRedpackResult.class);
+      WxRedpackResult wxMpRedpackResult = (WxRedpackResult) xstream.fromXML(responseContent);
+      return wxMpRedpackResult;
+    } catch (IOException e) {
+      log.error(MessageFormatter.format("The exception was happened when sending redpack '{}'.", request.toString()).getMessage(), e);
+      WxError error = new WxError();
+      error.setErrorCode(-1);
+      throw new WxErrorException(error);
+    }
+  }
 }
